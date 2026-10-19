@@ -1,0 +1,19 @@
+{
+  "name": "rswrlbp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RuneScape Wiki / RuneLite Best Practices — pre-review tooling for OSRS plugins, apps and extensions.",
+  "type": "module",
+  "scripts": {
+    "lint": "node plugins/osrs-plugin-review/scripts/osrs-lint.mjs",
+    "rules": "node plugins/osrs-plugin-review/scripts/osrs-lint.mjs --rules",
+    "test": "node tests/run.mjs",
+    "docs": "node scripts/serve-docs.mjs",
+    "docs:lint": "npx --yes @redocly/cli@1.25.11 lint docs/openapi.yaml",
+    "sync:practices": "node scripts/sync-practices.mjs",
+    "docs:links": "node scripts/check-links.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,5 @@
+dependencies {
+    compileOnly 'net.runelite:client:latest.release'
+    implementation 'com.squareup.retrofit2:retrofit:2.9.0'
+    implementation 'org.apache.commons:commons-lang3:3.12.0'
+}

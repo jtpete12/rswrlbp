@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OSRS endpoints and what they cost</title>
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css">
+<style>
+  :root {
+    --ink: #10131a;
+    --paper: #f6f7f9;
+    --band: #161b26;
+    --band-ink: #e8eaf0;
+    --muted: #9aa3b5;
+    --cheap: #1b7f4b;
+    --moderate: #8a6100;
+    --expensive: #a8410f;
+    --avoid: #a01027;
+    --rule: rgba(255, 255, 255, .12);
+  }
+
+  body { margin: 0; background: var(--paper); color: var(--ink); }
+
+  /* The band carries the two facts that decide whether a tool gets blocked.
+     They belong above the fold, not inside a collapsed operation. */
+  .band {
+    background: var(--band); color: var(--band-ink);
+    padding: 26px 24px 22px;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .band-inner { max-width: 1140px; margin: 0 auto; }
+  .band h1 { margin: 0 0 6px; font-size: 25px; letter-spacing: -.015em; }
+  .band p { margin: 0 0 16px; color: var(--muted); max-width: 70ch; }
+  .band a { color: #7fb4ff; }
+
+  .cards { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 18px; }
+  .card {
+    flex: 1 1 290px; background: rgba(255, 255, 255, .045);
+    border: 1px solid var(--rule); border-radius: 7px; padding: 13px 15px;
+  }
+  .card h2 {
+    margin: 0 0 6px; font-size: 11px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--muted); font-weight: 600;
+  }
+  .card p { margin: 0; font-size: 13.5px; color: #cdd3e0; }
+  .card code {
+    background: rgba(255, 255, 255, .1); padding: 1px 5px; border-radius: 3px;
+    font-size: 12.5px;
+  }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .legend-label {
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--muted); margin-right: 2px; font-weight: 600;
+  }
+
+  .cost {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: .04em; color: #fff; white-space: nowrap;
+  }
+  .cost-cheap { background: var(--cheap); }
+  .cost-moderate { background: var(--moderate); }
+  .cost-expensive { background: var(--expensive); }
+  .cost-avoid { background: var(--avoid); }
+
+  #swagger-ui { max-width: 1180px; margin: 0 auto; }
+  .swagger-ui .info { margin: 28px 0 18px; }
+  .swagger-ui .opblock-summary-description { text-align: left; }
+  /* Tables inside descriptions are doing real work here, so let them breathe. */
+  .swagger-ui .renderedMarkdown table { border-collapse: collapse; margin: 10px 0; }
+  .swagger-ui .renderedMarkdown td,
+  .swagger-ui .renderedMarkdown th {
+    border: 1px solid #d8dde5; padding: 5px 10px; font-size: 13px;
+  }
+  .swagger-ui .renderedMarkdown th { background: #eef1f5; text-align: left; }
+  .swagger-ui .renderedMarkdown blockquote {
+    border-left: 3px solid #c3cad6; margin: 10px 0; padding: 2px 0 2px 13px;
+    color: #4a5365; font-style: italic;
+  }
+  .load-error {
+    max-width: 1140px; margin: 40px auto; padding: 18px 20px;
+    border: 1px solid #e0b4b4; background: #fdf4f4; border-radius: 7px;
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+</style>
+</head>
+<body>
+
+<div class="band">
+  <div class="band-inner">
+    <h1>OSRS endpoints, and what each one costs</h1>
+    <p>
+      Every endpoint an Old School RuneScape plugin, app or extension is likely
+      to read, annotated with the load it puts on whoever serves it and how long
+      you may cache the answer. Part of
+      <a href="https://github.com/jtpete12/osrs-plugin-review">osrs-plugin-review</a>.
+    </p>
+
+    <div class="cards">
+      <div class="card">
+        <h2>Set a User-Agent</h2>
+        <p>
+          The one hard requirement the wiki states. These defaults are blocked
+          <em>before your code runs</em>: <code>python-requests</code>,
+          <code>Python-urllib</code>, <code>Apache-HttpClient</code>,
+          <code>RestSharp</code>, <code>Java/{version}</code>,
+          <code>curl/{version}</code>. A bare <code>HttpURLConnection</code>
+          sends the Java one.
+        </p>
+      </div>
+      <div class="card">
+        <h2>Never loop a bulk endpoint</h2>
+        <p>
+          Omitting <code>id</code> on <code>/latest</code> costs the wiki about
+          <strong>100&times; less</strong> than fetching items one at a time.
+          Their wording: &ldquo;don't hit us with 3700 API requests&rdquo;.
+        </p>
+      </div>
+      <div class="card">
+        <h2>Cache the misses too</h2>
+        <p>
+          A lookup that fails and stores nothing re-pays its full cost every
+          time. The keys that never resolve are asked for most often, because
+          nothing records that the answer is no.
+        </p>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span class="legend-label">Cost</span>
+      <span class="cost cost-cheap">cheap</span>
+      <span class="cost cost-moderate">moderate</span>
+      <span class="cost cost-expensive">expensive</span>
+      <span class="cost cost-avoid">avoid</span>
+      <span style="color:var(--muted);font-size:13px">
+        &mdash; shown on each operation; see the full description for the TTL.
+      </span>
+    </div>
+  </div>
+</div>
+
+<div id="swagger-ui"></div>
+
+<script src="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui-bundle.js" crossorigin></script>
+<script>
+(function () {
+  'use strict';
+
+  var COSTS = ['cheap', 'moderate', 'expensive', 'avoid'];
+
+  /**
+   * Each operation's summary starts with its cost token. Swagger UI has no
+   * notion of that, so lift the leading token out of the text and draw it as a
+   * badge — the whole point of this page is that cost is visible before you
+   * open anything.
+   */
+  function badgeSummaries(root) {
+    var nodes = root.querySelectorAll('.opblock-summary-description');
+    Array.prototype.forEach.call(nodes, function (node) {
+      if (node.dataset.costed) return;
+      var text = node.textContent.trim();
+      var match = /^([a-z]+(?:\s*\([^)]*\))?(?:\s*\/\s*[a-z]+(?:\s*\([^)]*\))?)*)\s+—\s+([\s\S]+)$/.exec(text);
+      if (!match) return;
+
+      var tokens = match[1].split('/').map(function (t) { return t.trim(); });
+      if (!tokens.every(function (t) { return COSTS.indexOf(t.split(' ')[0]) !== -1; })) return;
+
+      node.dataset.costed = '1';
+      node.textContent = '';
+      tokens.forEach(function (token) {
+        var badge = document.createElement('span');
+        badge.className = 'cost cost-' + token.split(' ')[0];
+        badge.textContent = token;
+        badge.style.marginRight = '7px';
+        node.appendChild(badge);
+      });
+      node.appendChild(document.createTextNode(match[2]));
+    });
+  }
+
+  window.ui = SwaggerUIBundle({
+    url: 'openapi.yaml',
+    dom_id: '#swagger-ui',
+    deepLinking: true,
+    docExpansion: 'list',
+    defaultModelsExpandDepth: 1,
+    tryItOutEnabled: false,
+    // Every operation here is someone else's service. A "Try it out" button
+    // on an endpoint documented as expensive is an invitation to do the exact
+    // thing this page exists to discourage.
+    supportedSubmitMethods: [],
+    presets: [SwaggerUIBundle.presets.apis],
+    onComplete: function () { badgeSummaries(document); },
+    requestInterceptor: function (req) { return req; },
+  });
+
+  // Operations render as tags are opened, so keep badging as the DOM grows.
+  var target = document.getElementById('swagger-ui');
+  new MutationObserver(function () { badgeSummaries(target); })
+    .observe(target, { childList: true, subtree: true });
+
+  // A file:// open cannot fetch the spec. Say so plainly rather than sitting
+  // on an empty page.
+  setTimeout(function () {
+    if (target.querySelector('.opblock') || target.querySelector('.errors-wrapper')) return;
+    if (location.protocol !== 'file:') return;
+    target.innerHTML = '<div class="load-error"><strong>Opened from the filesystem.</strong> '
+      + 'Browsers will not fetch <code>openapi.yaml</code> over <code>file://</code>. '
+      + 'Serve this directory over HTTP instead, for example '
+      + '<code>npx serve docs</code> or <code>python -m http.server</code>.</div>';
+  }, 1200);
+}());
+</script>
+
+</body>
+</html>

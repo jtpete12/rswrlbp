@@ -1,0 +1,599 @@
+openapi: 3.1.0
+
+info:
+  title: OSRS third-party data endpoints — and what each one costs
+  version: "1.0.0"
+  x-osrs-lint-rules: [no-user-agent, blocked-default-user-agent, no-cache-layer, no-retry-backoff]
+  summary: The endpoints an OSRS plugin, app or extension reads, annotated with load.
+  description: |
+    Every endpoint an Old School RuneScape tool is likely to read, in one place,
+    with the thing the reference docs bury: **what each request costs the people
+    serving it**, and how long you may cache the answer.
+
+    This exists because the two ways third-party OSRS tools get blocked are not
+    exotic. They loop a per-item endpoint that has a bulk form, and they send a
+    User-Agent that was blocked before the request arrived. Both are visible in
+    the table below before you write any code.
+
+    ## Read this first
+
+    **Set a descriptive User-Agent.** It is the one hard requirement the wiki
+    states, and it is how they tell your traffic from abuse when deciding what
+    to throttle. Say what the tool is and how to reach you:
+
+    ```
+    User-Agent: my-tool/1.2 (GE price overlay; @me on Discord)
+    ```
+
+    These defaults are blocked **pre-emptively**, before your code runs:
+
+    | Blocked | Sent by |
+    | --- | --- |
+    | `python-requests` | `requests` with no headers |
+    | `Python-urllib` | `urllib.request` |
+    | `Apache-HttpClient` | Apache HttpClient |
+    | `RestSharp` | RestSharp |
+    | `Java/{version}` | **a bare `HttpURLConnection`** |
+    | `curl/{version}` | curl |
+
+    The libraries are fine; the default header is not. The `Java/{version}` row
+    is the one that wastes an afternoon — a blocked request looks exactly like
+    an outage. Browser JavaScript cannot set `User-Agent`, so send
+    `Api-User-Agent` instead.
+
+    **Cache, and match the TTL to the data.** The wiki caches at several levels
+    on their side and asks you to cache on yours. Prices move in minutes;
+    `/mapping` changes when the game does. A 30-second TTL on `/1h` is pure
+    waste.
+
+    **Cache misses too.** A lookup that fails and stores nothing re-pays the
+    full cost on every later request for the same key — and the keys that never
+    resolve are the ones asked for most often, because nothing records that the
+    answer is no.
+
+    ## Cost vocabulary
+
+    Each operation's summary starts with one of these:
+
+    | Token | Means |
+    | --- | --- |
+    | `cheap` | Static or CDN-served. Cache hard; refetch on game updates. |
+    | `moderate` | Pre-aggregated. Cache to the endpoint's own granularity. |
+    | `expensive` | Real work per request on their servers. Avoid in a loop. |
+    | `avoid` | An anti-pattern with a documented cheaper alternative. |
+
+    ## Sources
+
+    - [RuneScape:Real-time Prices](https://oldschool.runescape.wiki/w/RuneScape:Real-time_Prices)
+    - [Forum:API and terms of use](https://oldschool.runescape.wiki/w/Forum:API_and_terms_of_use)
+    - [MediaWiki API:Etiquette](https://www.mediawiki.org/wiki/API:Etiquette)
+    - [runelite/plugin-hub](https://github.com/runelite/plugin-hub)
+
+    Wiki content is licensed
+    [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/) — a
+    **non-commercial** licence that also requires attribution. That is the
+    licensing half of the "can I charge for this?" question.
+  license:
+    name: BSD-2-Clause
+    url: https://github.com/jtpete12/osrs-plugin-review/blob/main/LICENSE
+
+servers:
+  - url: https://prices.runescape.wiki/api/v2/osrs
+    description: Real-time Grand Exchange prices (OSRS)
+  - url: https://oldschool.runescape.wiki
+    description: The wiki itself — MediaWiki API and images
+  - url: https://secure.runescape.com
+    description: Jagex — hiscores and the item database
+  - url: https://static.runelite.net
+    description: RuneLite's static CDN
+
+# Every endpoint here is public and unauthenticated. Declaring an empty
+# security requirement says that outright, rather than leaving a reader to
+# wonder which of them wants a key. None of them does; what they want is a
+# User-Agent.
+security: []
+
+tags:
+  - name: Prices
+    description: |
+      **Base:** `https://prices.runescape.wiki/api/v2/osrs`
+
+      No endpoint here is explicitly rate-limited, and the wiki caches hard on
+      their side. They reserve the right to restrict access when usage threatens
+      stability, and describe the threshold as *"multiple large queries per
+      second for a sustained period"*.
+
+      v1 is still served but documented as removable. Use v2. Note that prices
+      can exceed a signed 32-bit integer, and v2 averages carry up to two
+      decimal places.
+  - name: Wiki content
+    description: |
+      **Base:** `https://oldschool.runescape.wiki`
+
+      The expensive surface, and the one most tools reach for by mistake. Send
+      requests **in series, not in parallel**, batch up to 50 titles per
+      request, set `maxlag`, and send `Accept-Encoding: gzip`.
+
+      Rate limiting arrives as a `ratelimited` error. You may retry, but widen
+      the gap — exponential backoff.
+  - name: Hiscores
+    description: |
+      **Base:** `https://secure.runescape.com`
+
+      Jagex's, not the wiki's, and per-player by nature — there is no bulk form.
+      That makes it the easiest thing in the ecosystem to abuse: a leaderboard
+      refreshing a hundred players on a timer is a hundred requests per tick.
+      Cache per player, refresh on user action rather than on a clock, and back
+      off hard on failure.
+  - name: Item images
+    description: |
+      Item sprites, keyed by item **id**, from the two clients that publish
+      them. Prefer these to the wiki for anything that is an item: they are
+      static, exact, and built to be fetched.
+
+      A RuneLite *install* is not a source — it keeps no item images on disk and
+      renders them at runtime from the packed game cache.
+
+paths:
+  /latest:
+    get:
+      tags: [Prices]
+      operationId: getLatest
+      x-osrs-lint-rules: [per-item-price-request, prices-api-v1, no-cache-layer]
+      summary: "cheap (bulk) / avoid (per id) — latest high and low for every item"
+      description: |
+        Latest instant-buy and instant-sell price per item, with unix timestamps.
+
+        **Cost:** cheap with no `id`; **abusive in a loop**. Omitting `id` and
+        taking the whole map costs roughly **100x less** than fetching items one
+        at a time. The wiki's own wording:
+
+        > don't hit us with 3700 API requests
+
+        **Cache for:** minutes. There is no value in asking faster than the data
+        moves.
+
+        Items never traded are omitted entirely, and a side is `null` when no
+        instant-buy or instant-sell has ever been seen. **Absent is not zero.**
+      parameters:
+        - name: id
+          in: query
+          required: false
+          description: |
+            A single item id. **Do not loop over this.** It exists for the case
+            where you genuinely want one item; for many items, omit it.
+          schema: { type: integer }
+      responses:
+        "429":
+          description: |
+            Access restricted. There is no documented rate limit on this
+            endpoint — the wiki publishes none — but they reserve the right to
+            throttle usage that threatens stability, describing the threshold
+            as multiple large queries per second sustained. Back off and serve
+            stale data; do not retry in a tight loop.
+        "200":
+          description: Map of item id to its latest prices.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    additionalProperties:
+                      $ref: "#/components/schemas/LatestPrice"
+              example:
+                data:
+                  "4151": { high: 1658000, highTime: 1771430400, low: 1650001, lowTime: 1771430380 }
+
+  /mapping:
+    get:
+      tags: [Prices]
+      operationId: getMapping
+      x-osrs-lint-rules: [no-cache-layer]
+      summary: "cheap — every tradeable item's name, id, limit and alch values"
+      description: |
+        The static facts about each item: name, id, examine text, members flag,
+        low and high alch values, GE buy limit, and the wiki icon filename.
+
+        **Cost:** cheap, one request.
+        **Cache for:** until the game updates. This is effectively a constant —
+        a tool refetching it hourly is refetching a constant. Fetching it once
+        per release and committing the snapshot is entirely reasonable.
+
+        **Covers GE-tradeable items only** (roughly 4,600). Skill capes, quest
+        items and other untradeables are **not** here, which surprises people
+        building a name-to-id index.
+      responses:
+        "429":
+          description: |
+            Access restricted. There is no documented rate limit on this
+            endpoint — the wiki publishes none — but they reserve the right to
+            throttle usage that threatens stability, describing the threshold
+            as multiple large queries per second sustained. Back off and serve
+            stale data; do not retry in a tight loop.
+        "200":
+          description: Array of item descriptors.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MappingItem" }
+
+  /5m:
+    get:
+      tags: [Prices]
+      operationId: get5m
+      x-osrs-lint-rules: [polling-faster-than-data]
+      summary: "moderate — 5-minute average prices and trade volumes"
+      description: |
+        Average high and low over a 5-minute block, with trade counts.
+
+        **Cost:** moderate — pre-aggregated, so one request answers what would
+        otherwise be many.
+        **Cache for:** 5 minutes. Polling faster returns the same block again.
+      parameters:
+        - name: timestamp
+          in: query
+          required: false
+          description: Start of the 5-minute period, as a unix timestamp.
+          schema: { type: integer }
+      responses:
+        "429":
+          description: |
+            Access restricted. There is no documented rate limit on this
+            endpoint — the wiki publishes none — but they reserve the right to
+            throttle usage that threatens stability, describing the threshold
+            as multiple large queries per second sustained. Back off and serve
+            stale data; do not retry in a tight loop.
+        "200":
+          description: Map of item id to averages for the block.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AverageResponse" }
+
+  /1h:
+    get:
+      tags: [Prices]
+      operationId: get1h
+      x-osrs-lint-rules: [polling-faster-than-data]
+      summary: "moderate — hourly average prices and trade volumes"
+      description: |
+        Average high and low over an hour, with trade counts.
+
+        **Cost:** moderate.
+        **Cache for:** an hour. A sub-minute timer on this endpoint is the
+        single most common abusive pattern in OSRS tooling.
+      parameters:
+        - name: timestamp
+          in: query
+          required: false
+          description: Start of the hour, as a unix timestamp.
+          schema: { type: integer }
+      responses:
+        "429":
+          description: |
+            Access restricted. There is no documented rate limit on this
+            endpoint — the wiki publishes none — but they reserve the right to
+            throttle usage that threatens stability, describing the threshold
+            as multiple large queries per second sustained. Back off and serve
+            stale data; do not retry in a tight loop.
+        "200":
+          description: Map of item id to averages for the hour.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AverageResponse" }
+
+  /timeseries:
+    get:
+      tags: [Prices]
+      operationId: getTimeseries
+      x-osrs-lint-rules: [timeseries-in-loop, timestep-assumed]
+      summary: "expensive — price history for one item"
+      description: |
+        Price history for a single item over a lookback window.
+
+        **Cost:** expensive, and **per item by design** — the costliest price
+        endpoint. Fanning it out over a list multiplies that cost directly.
+        **Cache for:** as long as the window's own resolution. Fetch only for
+        the one item a user is actually looking at; for breadth use `/5m` or
+        `/1h`, which are already aggregated.
+
+        The response carries a `timestep`, and the wiki warns it is **NOT
+        guaranteed** and may change without notice. Read it from the response
+        rather than hardcoding 300.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: lookback
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: ["6h", "24h", "7d", "30d", "6m", "1y"]
+      responses:
+        "400":
+          description: Missing `id`, or a `lookback` outside the allowed set.
+        "429":
+          description: |
+            Access restricted. There is no documented rate limit on this
+            endpoint — the wiki publishes none — but they reserve the right to
+            throttle usage that threatens stability, describing the threshold
+            as multiple large queries per second sustained. Back off and serve
+            stale data; do not retry in a tight loop.
+        "200":
+          description: Time-ordered price points for the item.
+
+  /api.php:
+    get:
+      tags: [Wiki content]
+      operationId: mediaWikiApi
+      x-osrs-lint-rules: [expensive-wiki-query, mediawiki-no-maxlag, mediawiki-unbatched, parallel-wiki-requests, no-gzip, revid-not-oldid]
+      summary: "expensive — the MediaWiki API; cost depends entirely on `action`"
+      description: |
+        The wiki's MediaWiki API. **The cost is set by `action`, not by this
+        endpoint**, and the spread between the cheapest and dearest call here is
+        larger than between any two other entries in this document.
+
+        | Instead of | Use | Why |
+        | --- | --- | --- |
+        | `action=parse` | `action=raw` on the data module | Parsing renders the page per request |
+        | `action=ask` (SMW) | A bulk dump, or a committed snapshot | Runs a query per request |
+        | `action=cargoquery`, `Special:CargoExport` | Export once at build time | Same, plus it is usually static data |
+        | `action=query&list=search` | Your own index over a dump | Full-text search is the dearest read |
+        | `prop=revisions&rvprop=content` | `action=raw` | Same bytes, far less machinery |
+        | `revid=` | `oldid=` | `revid` is documented as expensive |
+
+        **Etiquette, all documented:** requests in series not in parallel; batch
+        up to 50 pipe-separated titles; use a generator rather than a second
+        round of lookups; set `maxlag` on anything non-interactive; send
+        `Accept-Encoding: gzip`.
+
+        **Cache for:** as long as you can bear. Most tools reaching for this
+        want data that is already published in bulk.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          description: |
+            `raw` and `query` are the cheap ones. `parse`, `ask`, `cargoquery`
+            and `expandtemplates` do real work per request.
+          schema:
+            type: string
+            enum: [raw, query, parse, ask, cargoquery, expandtemplates]
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, xml], default: json }
+        - name: titles
+          in: query
+          description: "Up to 50, pipe-separated: `PageA|PageB|PageC`. Batch rather than loop."
+          schema: { type: string }
+        - name: maxlag
+          in: query
+          description: |
+            Refuses the request instead of adding load when the servers are
+            already behind. Set it on anything non-interactive; `5` is a
+            reasonable default. Treat the `maxlag` error as back-off-and-retry,
+            not as a failure.
+          schema: { type: integer, default: 5 }
+      responses:
+        "200":
+          description: Shape depends entirely on `action`.
+        "429":
+          description: |
+            Rate limited, as a `ratelimited` error. Widen the gap — exponential
+            backoff — rather than retrying immediately.
+
+  /images/{filename}:
+    get:
+      tags: [Wiki content, Item images]
+      operationId: getWikiImage
+      x-osrs-lint-rules: [wiki-image-by-name, no-negative-cache, missing-attribution]
+      summary: "moderate — a wiki image; the last resort for anything that is an item"
+      description: |
+        An image file from the wiki, keyed by **filename**, not by item id.
+
+        **Cost:** moderate per request, but the wrong source for item sprites on
+        two counts. A filename is a poor key — the wiki files stackable items
+        only at a stack size, so a seed needs `Name`, then `Name_5`, then
+        `Name_1` before anything answers, meaning **a name that resolves to
+        nothing costs three requests** — and the files are article illustrations
+        sized for an article, sometimes over 100KB for something you will draw
+        at 20px.
+
+        **Use instead:** `static.runelite.net/cache/item/icon/{id}.png` for
+        anything with an item id.
+
+        **Legitimately wiki-only:** pictures of things that are not items and so
+        have no id — spells, quests, scenery, interfaces. Keep that list short,
+        explicit, and checked, and cache every hit permanently.
+      parameters:
+        - name: filename
+          in: path
+          required: true
+          description: "Capitalised, underscored, with extension: `Abyssal_whip.png`."
+          schema: { type: string }
+      responses:
+        "200": { description: The image. }
+        "404": { description: No file under that name. Record this so you stop asking. }
+
+  /w/{page}:
+    get:
+      tags: [Wiki content]
+      operationId: getWikiArticle
+      x-osrs-lint-rules: [scrapes-wiki-html, expensive-wiki-query]
+      summary: "avoid — a rendered article page"
+      description: |
+        A fully rendered article.
+
+        **Cost:** the most expensive thing the wiki can hand you, and its HTML
+        is not a stable interface, so scraping it breaks on any layout change.
+
+        **Use instead:** the prices API for numbers, `action=raw` on the data
+        module behind the page, `prop=extracts` if you genuinely need prose, or
+        a bulk dump. If the numbers are static, transcribe them into source with
+        a citation and fetch nothing at runtime.
+      parameters:
+        - name: page
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "404":
+          description: No such article.
+        "200": { description: Rendered HTML. }
+
+  /m=hiscore_oldschool/index_lite.json:
+    get:
+      tags: [Hiscores]
+      operationId: getHiscoresJson
+      x-osrs-lint-rules: [no-retry-backoff, no-request-timeout]
+      summary: "moderate — one player's levels and ranks"
+      description: |
+        A player's skills and activities. Self-describing — it returns skill
+        names and ids, so a new skill arrives without a code change.
+
+        **Cost:** moderate, but **per player with no bulk form**, so cost scales
+        with how many players you track and how often.
+        **Cache for:** at least a minute per player, and refresh on user action
+        rather than on a timer. Collapse concurrent lookups for the same name
+        onto one in-flight request.
+
+        Unranked skills come back as `-1`; treat that as level 1 with 0 xp
+        rather than as a real value. Other game modes live at
+        `m=hiscore_oldschool_ironman`, `_hardcore_ironman`, `_ultimate`,
+        `_skiller` and `_skiller_defence`.
+      parameters:
+        - name: player
+          in: query
+          required: true
+          schema: { type: string, maxLength: 12 }
+      responses:
+        "200": { description: Skills and activities for the player. }
+        "404": { description: No such player on that hiscore table. }
+
+  /m=hiscore_oldschool/index_lite.ws:
+    get:
+      tags: [Hiscores]
+      operationId: getHiscoresCsv
+      x-osrs-lint-rules: [no-retry-backoff, no-request-timeout]
+      summary: "moderate — the same, as positional CSV"
+      description: |
+        The older CSV form: one row per skill, in a fixed order, as
+        `rank,level,xp`.
+
+        **Cost:** as the JSON form.
+
+        Positional, so a new skill shifts every row after it. Worth keeping as a
+        fallback, not as the primary.
+      parameters:
+        - name: player
+          in: query
+          required: true
+          schema: { type: string, maxLength: 12 }
+      responses:
+        "404":
+          description: No such player on that hiscore table.
+        "200": { description: CSV rows. }
+
+  /m=itemdb_oldschool/obj_sprite.gif:
+    get:
+      tags: [Item images]
+      operationId: getJagexSprite
+      x-osrs-lint-rules: [blocked-default-user-agent]
+      summary: "cheap — Jagex's own item sprite, by id"
+      description: |
+        The sprite Jagex's item database uses, as a GIF.
+
+        **Cost:** cheap.
+        **Cache for:** indefinitely — it changes only when the game's artwork
+        does.
+
+        A reasonable fallback for the rare id RuneLite has not published.
+        `obj_big.gif` serves a larger version of the same item.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "404":
+          description: No sprite for that id.
+        "200": { description: "The sprite, as `image/gif`." }
+
+  /cache/item/icon/{itemId}.png:
+    get:
+      tags: [Item images]
+      operationId: getRuneLiteIcon
+      x-osrs-lint-rules: [own-okhttp-client, reimplements-item-prices]
+      summary: "cheap — RuneLite's published item icon, by id (prefer this)"
+      description: |
+        The game's own item sprite as RuneLite draws it, from RuneLite's static
+        CDN, as a PNG with transparency.
+
+        **Cost:** cheap — a static CDN built to be fetched.
+        **Cache for:** indefinitely.
+
+        **This is the right default for item icons.** It is keyed by id, so
+        there is no filename guessing and no stack-size ladder; it is a real
+        icon rather than an article illustration; and it is served by
+        infrastructure that exists for exactly this. Coverage is effectively
+        total: sampling a real planner's item set found **no id that resolved
+        but had no sprite**.
+
+        404 is a clean, fast answer for an id that has none — record it and stop
+        asking.
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: "The icon, as `image/png`." }
+        "404": { description: No icon for that id. }
+
+components:
+  schemas:
+    LatestPrice:
+      type: object
+      description: |
+        A `null` on either side means no instant-buy or instant-sell has ever
+        been seen for that item. It does not mean zero.
+      properties:
+        high:
+          type: [integer, "null"]
+          description: Most recent instant-buy. May exceed a signed 32-bit integer.
+        highTime: { type: [integer, "null"], description: Unix timestamp of that trade. }
+        low:
+          type: [integer, "null"]
+          description: Most recent instant-sell.
+        lowTime: { type: [integer, "null"] }
+
+    MappingItem:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        examine: { type: string }
+        members: { type: boolean }
+        lowalch: { type: integer }
+        highalch: { type: integer }
+        limit: { type: integer, description: GE buy limit per four hours. }
+        value: { type: integer }
+        icon: { type: string, description: The wiki's filename for the item image. }
+
+    AverageResponse:
+      type: object
+      properties:
+        timestamp: { type: integer }
+        data:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              avgHighPrice: { type: [number, "null"], description: May carry two decimal places in v2. }
+              highPriceVolume: { type: integer }
+              avgLowPrice: { type: [number, "null"] }
+              lowPriceVolume: { type: integer }

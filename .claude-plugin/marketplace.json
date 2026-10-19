@@ -1,0 +1,27 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "rswrlbp",
+  "description": "RuneScape Wiki / RuneLite Best Practices — a pre-review for OSRS plugins, apps and extensions: what a tool costs the services it reads, and whether it gates anything behind payment.",
+  "owner": {
+    "name": "jtpete12",
+    "url": "https://github.com/jtpete12"
+  },
+  "plugins": [
+    {
+      "name": "osrs-plugin-review",
+      "description": "Reviews OSRS plugin, app and extension code for API etiquette and Plugin Hub readiness: per-item request loops, blocked User-Agents, missing caching, polling faster than the data changes, expensive parser queries where a bulk dump exists, and features gated behind payment on non-commercially-licensed data.",
+      "source": "./plugins/osrs-plugin-review",
+      "category": "code-review",
+      "keywords": [
+        "osrs",
+        "runescape",
+        "runelite",
+        "plugin-hub",
+        "api-etiquette",
+        "code-review"
+      ],
+      "homepage": "https://github.com/jtpete12/rswrlbp",
+      "version": "0.2.0"
+    }
+  ]
+}

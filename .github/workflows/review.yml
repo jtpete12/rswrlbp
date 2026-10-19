@@ -1,0 +1,82 @@
+name: osrs-lint
+
+# Three jobs. `self-test` proves the checker still works; `review` runs it over
+# whatever repo has vendored this workflow; `links` checks the documentation's
+# citations still resolve. A checker nobody tested is worse than no checker,
+# because people trust its silence.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a renamed wiki section is caught without anyone noticing it by
+    # hand. Links rot on the far end's schedule, not on ours.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      path:
+        description: Directory to review.
+        type: string
+        default: .
+      gate:
+        description: Severity that fails the run (error, warn, info, none).
+        type: string
+        default: error
+
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node tests/run.mjs
+      # Structural validation of the endpoint reference. The test run above
+      # only cross-checks the spec against the checker; it does not know what
+      # a valid OpenAPI document is. Swagger UI rendered the spec happily while
+      # it still had twelve validation errors, so "it looks fine in the browser"
+      # is not the same check. This needs a real validator, which is why it runs
+      # here rather than in the dependency-free test suite.
+      - name: Validate the OpenAPI spec
+        run: npm run docs:lint
+
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # `inputs` is populated on workflow_call (where `path` defaults to '.')
+      # and empty on push and pull_request. So a caller reviewing their own repo
+      # gets its root, while this repo reviews only `plugins` — because
+      # `tests/fixtures/offender` is a deliberately abusive plugin and linting it
+      # is supposed to fail. Pointing this job at '.' here fails the run on the
+      # fixture every time, which is exactly what it did the first time.
+      # --github turns findings into inline annotations on the diff.
+      - name: Annotate findings
+        run: >
+          node plugins/osrs-plugin-review/scripts/osrs-lint.mjs
+          "${{ inputs.path || 'plugins' }}" --github --gate none
+      - name: Gate
+        run: >
+          node plugins/osrs-plugin-review/scripts/osrs-lint.mjs
+          "${{ inputs.path || 'plugins' }}" --gate "${{ inputs.gate || 'error' }}"
+
+  links:
+    runs-on: ubuntu-latest
+    # Deliberately not on pull requests. This fetches the wiki and mediawiki.org
+    # to verify anchors, and running it on every push of every branch would be
+    # exactly the needless repeat traffic the practices argue against. Pushes to
+    # main, a weekly cron, and on demand is proportionate.
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check documentation links and anchors
+        run: npm run docs:links
