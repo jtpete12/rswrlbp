@@ -1,9 +1,13 @@
-name: osrs-lint
+name: ci
 
-# Three jobs. `self-test` proves the checker still works; `review` runs it over
-# whatever repo has vendored this workflow; `links` checks the documentation's
-# citations still resolve. A checker nobody tested is worse than no checker,
-# because people trust its silence.
+# This repository's own CI. Plugin repos do not call this file — they use the
+# composite action at the repo root (`uses: jtpete12/rswrlbp@<tag>`); see the
+# comment in action.yml for why it is not a reusable workflow.
+#
+# Three jobs. `self-test` proves the checker still works; `action` runs the
+# published action over this repo exactly as a plugin repo would; `links`
+# checks the documentation's citations still resolve. A checker nobody tested
+# is worse than no checker, because people trust its silence.
 
 on:
   push:
@@ -14,16 +18,6 @@ on:
     # hand. Links rot on the far end's schedule, not on ours.
     - cron: '0 6 * * 1'
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      path:
-        description: Directory to review.
-        type: string
-        default: .
-      gate:
-        description: Severity that fails the run (error, warn, info, none).
-        type: string
-        default: error
 
 jobs:
   self-test:
@@ -43,28 +37,24 @@ jobs:
       - name: Validate the OpenAPI spec
         run: npm run docs:lint
 
-  review:
+  action:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Dogfood the action through `./`, the same code path `jtpete12/rswrlbp@tag`
+      # takes. Only `plugins`: `tests/fixtures/offender` is a deliberately
+      # abusive plugin and linting it is supposed to fail.
+      - uses: ./
         with:
-          node-version: 20
-      # `inputs` is populated on workflow_call (where `path` defaults to '.')
-      # and empty on push and pull_request. So a caller reviewing their own repo
-      # gets its root, while this repo reviews only `plugins` — because
-      # `tests/fixtures/offender` is a deliberately abusive plugin and linting it
-      # is supposed to fail. Pointing this job at '.' here fails the run on the
-      # fixture every time, which is exactly what it did the first time.
-      # --github turns findings into inline annotations on the diff.
-      - name: Annotate findings
-        run: >
-          node plugins/osrs-plugin-review/scripts/osrs-lint.mjs
-          "${{ inputs.path || 'plugins' }}" --github --gate none
-      - name: Gate
-        run: >
-          node plugins/osrs-plugin-review/scripts/osrs-lint.mjs
-          "${{ inputs.path || 'plugins' }}" --gate "${{ inputs.gate || 'error' }}"
+          path: plugins
+          gate: error
+      # And prove the gate gates: the offender must fail it.
+      - name: Offender fails the gate
+        run: |
+          if node plugins/osrs-plugin-review/scripts/osrs-lint.mjs tests/fixtures/offender --quiet; then
+            echo "::error::the offender fixture passed the error gate"
+            exit 1
+          fi
 
   links:
     runs-on: ubuntu-latest

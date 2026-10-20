@@ -52,7 +52,14 @@ const SKIP_DIRS = new Set([
   '.git', 'node_modules', 'build', 'dist', 'out', 'target', 'vendor',
   '.gradle', '.idea', '.vscode', 'coverage', '__pycache__', '.venv', 'venv',
   'bin', 'obj', '.next', '.nuxt', 'site-packages',
+  // Test sources never ship. A test asserting the Ko-fi link is present, or
+  // loading a fixture with getResource, is not the plugin doing either — and
+  // findings there were the loudest noise on real Plugin Hub repos.
+  'test', 'tests', '__tests__', 'androidTest',
 ]);
+
+/** Test files that live beside the code rather than in a test directory. */
+const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.(?:go|py)$|^test_\w+\.py$/;
 
 /* ------------------------------------------------------------------ *
  * Hosts we care about
@@ -206,31 +213,54 @@ function firstCallSite(text, hostVars) {
 }
 
 /**
- * Files that talk to a tracked service, best evidence first. Repo-level
- * findings anchor on the first of these, so a file that merely holds a wiki
- * link must never outrank one that actually makes a request.
+ * Files that make a request to a tracked service, as opposed to merely naming
+ * one. A plugin with an "Open the wiki" button builds a wiki URL and hands it
+ * to the browser; that is not traffic, and the repo-level rules (no
+ * User-Agent, no cache, no backoff) used to fire as errors on exactly that —
+ * Quest Helper was the case that showed it.
  */
 function callersOf(files) {
-  const confident = files.filter((f) => f.callSite?.confident);
-  return confident.length ? confident : files.filter((f) => f.callSite);
+  return files.filter((f) => f.callSite?.confident);
 }
 
-/** Does the body of the function called `name` reach a tracked service? */
-function namedCallbackTouchesHost(file, name) {
-  if (!name || name.length < 2) return false;
+/** Bodies (the first `span` lines) of every function called `name`. */
+function functionBodies(file, name, span = 30) {
+  if (!name || name.length < 2) return [];
   const lines = file.text.split('\n');
   const def = new RegExp(
     `(?:function\\s+${name}\\b|\\b${name}\\s*=\\s*(?:async\\s*)?(?:function|\\()|\\b(?:void|private|public|protected)[\\w\\s<>,\\[\\]]*\\b${name}\\s*\\()`,
   );
+  const out = [];
   for (let i = 0; i < lines.length; i++) {
-    if (!def.test(lines[i])) continue;
-    const body = lines.slice(i, i + 30).join('\n');
-    if (ANY_TRACKED_HOST.test(body)) return true;
-    for (const v of file.hostVars) {
-      if (new RegExp(`\\b${v}\\b`).test(body)) return true;
-    }
+    if (def.test(lines[i])) out.push(lines.slice(i, i + span).join('\n'));
   }
-  return false;
+  return out;
+}
+
+/** Does the body of the function called `name` reach a tracked service? */
+function namedCallbackTouchesHost(file, name) {
+  return functionBodies(file, name).some((body) => ANY_TRACKED_HOST.test(body)
+    || file.hostVars.some((v) => new RegExp(`\\b${v}\\b`).test(body)));
+}
+
+/** The callback a timer runs: `this::refresh`, `refresh`, `() -> this.refresh(...)`. */
+const TIMER_CALLBACK = /(?:setInterval|setTimeout|scheduleAtFixedRate|scheduleWithFixedDelay)\s*\(\s*(?:\(\)\s*(?:->|=>)\s*\{?\s*)?(?:this(?:::|\.))?(\w+)/;
+
+/*
+ * A fast tick whose callback returns early unless the data is stale is not
+ * a fast poll — it is a cheap check, and often a good one (Flipping Utilities
+ * ticks every second but only fetches when the panel is open, nothing is in
+ * flight and the last response is old enough). The guard has to come first
+ * in the body and mention time, staleness or a should-predicate.
+ */
+const STALENESS_GUARD = /\bif\s*\([^\n]*(?:\bshould\w*\s*\(|stale|elapsed|interval|\blast\w*|isAfter|isBefore|currentTimeMillis|Instant\.now|Date\.now|nanoTime|isVisible|inFlight)[^\n]*[\s\S]{0,60}?\breturn\b/i;
+
+function timerIsGated(file, lines, i) {
+  const inline = lines.slice(i, i + 6).join('\n');
+  if (/->|=>/.test(lines[i]) && STALENESS_GUARD.test(inline)) return true;
+  const cb = TIMER_CALLBACK.exec(lines[i]);
+  if (!cb) return false;
+  return functionBodies(file, cb[1], 8).some((body) => STALENESS_GUARD.test(body));
 }
 
 /* ------------------------------------------------------------------ *
@@ -261,7 +291,8 @@ const RULES = [
     kind: 'line',
     severity: 'warn',
     title: 'Deprecated v1 prices API',
-    pattern: /prices\.runescape\.wiki\/api\/v1\//i,
+    // Not /v1/dmm: Deadman has no v2 (it 404s), so there is nothing to move to.
+    pattern: /prices\.runescape\.wiki\/api\/v1\/(?!dmm\b)/i,
     why: 'v1 is still served but documented as removable, and v2 is the supported version.',
     fix: 'Move to /api/v2/osrs. Note v2 averages can carry two decimal places, and prices '
       + 'can exceed a signed 32-bit int — widen the types you parse into.',
@@ -372,14 +403,23 @@ const RULES = [
       ctx.periodMs = ms(n, unit);
       if (ctx.periodMs >= 60_000) return false;
       if (m[4] !== undefined && !ctx.inLoop) return false; // a lone sleep is not a poll
-      return ctx.nearHost(12, 24);
+      if (!ctx.nearHost(12, 24)) return false;
+      if (timerIsGated(ctx.file, ctx.lines, ctx.index)) {
+        // Still worth a look — the gate's own interval is what decides the
+        // request rate — but it is not the abusive pattern this rule names.
+        ctx.severity = 'info';
+        ctx.gated = true;
+      }
+      return true;
     },
     why: 'Prices move on the order of minutes and /5m and /1h are pre-aggregated, so a sub-minute '
       + 'timer spends requests on data that has not changed. Sustained multiple-large-queries-'
       + 'per-second is the wiki\'s own description of what gets access restricted.',
     fix: 'Poll no faster than the endpoint\'s granularity. RuneLite\'s own ItemManager refreshes '
       + 'prices every 30 minutes, which is a reasonable floor to copy.',
-    note: (ctx) => `timer fires every ${Math.round(ctx.periodMs)}ms`,
+    note: (ctx) => (ctx.gated
+      ? `timer ticks every ${Math.round(ctx.periodMs)}ms but returns early unless stale — check the gate's interval, not the tick`
+      : `timer fires every ${Math.round(ctx.periodMs)}ms`),
   },
   {
     id: 'expensive-wiki-query',
@@ -608,8 +648,9 @@ const RULES = [
     pattern: /new\s+OkHttpClient(?:\.Builder)?\s*\(/,
     why: 'RuneLite hands plugins a configured client through Guice: it carries a '
       + '"RuneLite/<version>" User-Agent interceptor, a 20 MB shared disk cache under '
-      + '~/.runelite/cache/okhttp, and a shared connection pool. A fresh client throws all '
-      + 'three away, and its requests go out with OkHttp\'s own agent.',
+      + '~/.runelite/cache/okhttp, a shared connection pool, and a guard that refuses '
+      + 'blocking calls on the client thread or the Swing EDT. A fresh client throws all '
+      + 'four away, and its requests go out with OkHttp\'s own agent.',
     fix: 'Take `@Inject private OkHttpClient httpClient;` and use `newBuilder()` on it if you '
       + 'need per-call changes.',
   },
@@ -649,8 +690,10 @@ const RULES = [
       const inHandler = /@Subscribe[\s\S]{0,400}(?:onGameTick|onClientTick|onMenuOptionClicked|onBeforeRender|onChatMessage|onItemContainerChanged)|clientThread\.invoke/.test(w);
       return inHandler && /newCall|openConnection|HttpGet|\.execute\(/.test(ctx.line);
     },
-    why: 'The client thread draws the game. A blocking request there stutters or freezes the '
-      + 'client for as long as the far end takes, and tick handlers run up to 50 times a minute.',
+    why: 'The client thread draws the game. RuneLite\'s injected OkHttpClient refuses a blocking '
+      + 'call there outright — it throws "Blocking network calls are not allowed on the client '
+      + 'thread" — so with that client this is a feature that never works. With any other client '
+      + 'it stalls the game for as long as the far end takes, every tick.',
     fix: 'Hand the work to the injected ScheduledExecutorService, or use OkHttp\'s enqueue(), '
       + 'and push the result back with clientThread.invokeLater() only to touch client state.',
   },
@@ -660,11 +703,25 @@ const RULES = [
     severity: 'error',
     title: 'getResource used instead of getResourceAsStream',
     pattern: /\.getResource\s*\(/,
-    when: (ctx) => ctx.file.ext === '.java' || ctx.file.ext === '.kt',
-    why: 'Plugin Hub distributes plugins as a JAR and states you may not assume it is unpacked '
-      + 'on disk, so a URL or File built from getResource fails in the shipped build while '
-      + 'working in your IDE.',
-    fix: 'Use getResourceAsStream, and ImageUtil.loadImageResource for images.',
+    when: (ctx) => {
+      if (ctx.file.ext !== '.java' && ctx.file.ext !== '.kt') return false;
+      // Reading through the URL (openStream, ImageIcon) still works from a
+      // jar: URL. Turning it into a file path is what breaks when shipped.
+      // toURI/getFile/getPath must be chained on getResource's own result: a
+      // bare `.getFile(` nearby is as likely a plugin's enum accessor feeding
+      // the resource name (Flipping Copilot's `icon.getFile()` was exactly that).
+      const w = ctx.window(2, 2);
+      const chained = /getResource\s*\((?:[^()]|\([^()]*\))*\)\s*\.\s*(?:toURI|getFile|getPath)\s*\(/.test(w);
+      const toFile = /new\s+File\s*\(|Paths\.get\s*\(|Path\.of\s*\(/.test(w);
+      ctx.severity = chained || toFile ? 'error' : 'warn';
+      return true;
+    },
+    why: 'Plugin Hub ships plugins as a JAR and says you cannot assume it is unpacked on disk, so '
+      + 'getResource returns a jar: URL rather than a file: one. Reading through that URL still '
+      + 'works; anything that turns it into a File or Path works in your IDE and breaks in the '
+      + 'shipped build. The Hub asks you to prefer getResourceAsStream either way.',
+    fix: 'Use getResourceAsStream, and ImageUtil.loadImageResource for images. For an existence '
+      + 'check, getResourceAsStream(...) != null does the same job.',
   },
   {
     id: 'unbounded-cache',
@@ -717,7 +774,11 @@ const RULES = [
     kind: 'line',
     severity: 'error',
     title: 'Feature gated behind payment or a licence check',
-    pattern: /\b(?:isPremium|hasPremium|isPro\b|isSubscribed|hasSubscription|subscriptionTier|licen[cs]eKey|activationKey|unlockCode|entitlement|isPaidUser|premiumOnly|paywall)\b|\b(?:patreon|gumroad|ko-?fi|boosty|stripe\.com|checkout\.stripe|paddle\.com|lemonsqueezy)\b/i,
+    // Gates, and the licence-verification APIs a gate calls — not payment
+    // platforms by name. A Patreon or Ko-fi button that unlocks nothing is
+    // fine, and matching the platform made Quest Helper's donate button four
+    // errors.
+    pattern: /\b(?:isPremium|hasPremium|isPro|isSubscribed|hasSubscription|subscriptionTier|licen[cs]eKey|activationKey|unlockCode|entitlement|isPaidUser|premiumOnly|paywall)\b|api\.gumroad\.com\/v2\/licenses|api\.lemonsqueezy\.com\/v1\/licenses|api\.keygen\.sh|checkout\.stripe\.com/i,
     why: 'Two problems stack here. The Plugin Hub will not merge a plugin it cannot verify '
       + 'against the rules, and a paid tier that unlocks behaviour at runtime is exactly that. '
       + 'Separately, wiki content is licensed CC BY-NC-SA 3.0 — a non-commercial licence — so '
@@ -850,6 +911,7 @@ function collect(root) {
         if (!SKIP_DIRS.has(e.name) && !e.name.startsWith('.claude')) walk(full);
         continue;
       }
+      if (TEST_FILE.test(e.name)) continue;
       const ext = path.extname(e.name).toLowerCase();
       const isCode = CODE_EXT.has(ext);
       const isMeta = META_FILES.has(e.name) || /^LICENSE|^COPYING|^NOTICE|readme\.md$/i.test(e.name);
@@ -954,6 +1016,7 @@ function run(root) {
         };
         if (rule.when && !rule.when(ctx)) continue;
         push(rule, {
+          severity: ctx.severity, // a `when` may grade a match up or down
           file: file.rel,
           line: i + 1,
           snippet: line.trim().slice(0, 160),

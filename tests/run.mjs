@@ -137,6 +137,19 @@ if (assetIds.join(',') === wanted.join(',')) {
   fail(`assets fixture tripped [${assetIds.join(', ')}], expected [${wanted.join(', ')}]`);
 }
 
+/* ---- shapes from real Hub plugins that were once misreported as errors ---- */
+// A donate button, a gated 1-second tick, a wiki link handed to the browser,
+// and a test directory full of things that would be errors in main code. The
+// tick stays visible at info; getResource read through its URL is a warn.
+const real = lint('realworld');
+const realGot = real.findings.map((f) => `${f.id}:${f.severity}`).sort().join(', ');
+const realWant = ['getresource-not-stream:warn', 'polling-faster-than-data:info'].join(', ');
+if (realGot === realWant) {
+  pass('realworld fixture: no errors, gated tick at info, tests skipped');
+} else {
+  fail(`realworld fixture reported [${realGot}], expected [${realWant}]`);
+}
+
 // …and the markers are not silencing everything indiscriminately.
 if (bad.findings.length > 0) pass(`offender still reports ${bad.findings.length} findings`);
 else fail('offender reported nothing — the ignore logic is too broad');

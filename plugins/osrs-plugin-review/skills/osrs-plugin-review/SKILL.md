@@ -125,12 +125,15 @@ to assume.
   `RuneLite/<version>` User-Agent interceptor, a shared 20 MB disk cache under
   `~/.runelite/cache/okhttp`, and a shared connection pool. `new OkHttpClient()`
   throws all three away.
-- **Never block the client thread.** It draws the game. Network calls belong on
+- **Never block the client thread.** It draws the game, and the injected
+  `OkHttpClient` throws on a blocking call there, so the feature simply never
+  works. Network calls belong on
   the injected `ScheduledExecutorService` or in `enqueue()`; come back with
   `clientThread.invokeLater()` only to touch client state.
 - **`getResourceAsStream`, not `getResource`.** Plugins ship as a JAR and the
-  Hub states you may not assume it is unpacked, so a `File` from `getResource`
-  works in your IDE and fails in the shipped build.
+  Hub states you may not assume it is unpacked, so a `File` or `Path` built from
+  `getResource` works in your IDE and fails in the shipped build. Reading
+  through the URL still works; the Hub asks you to prefer the stream anyway.
 - **Keep dependencies out.** The Hub verifies dependency hashes and a
   maintainer checks each new one by hand, so every addition lengthens review.
 

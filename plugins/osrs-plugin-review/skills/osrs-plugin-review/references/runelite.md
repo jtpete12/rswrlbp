@@ -7,7 +7,9 @@ rebuilt something the client already does". Read from the RuneLite source at
 ## The HTTP client
 
 RuneLite builds one `OkHttpClient` at startup and passes it into the Guice
-module, so a plugin gets it with `@Inject`. It carries three things a fresh
+module. What a plugin gets with `@Inject` is a `newBuilder()` copy of it
+(`RuneLiteModule.provideHttpClient`), so it shares everything below plus one
+extra guard. It carries four things a fresh
 client does not:
 
 **A User-Agent interceptor.**
@@ -27,8 +29,15 @@ errors are not cached.
 
 **A shared connection pool**, plus `pingInterval(30, SECONDS)`.
 
-Note what it does *not* set: there are no connect, read or write timeouts —
-those are OkHttp's defaults. If your call needs a deadline, set it yourself with
+**A client-thread guard.** The injected copy adds an interceptor that throws
+`IOException("Blocking network calls are not allowed on the client thread")`
+for a synchronous call on the client thread, and the same on the Swing EDT.
+So a blocking `execute()` there does not stutter the game — it fails, every
+time, and the feature silently never works.
+
+Note what it does *not* set: RuneLite configures no timeouts, so OkHttp's
+defaults apply — 10 seconds each for connect, read and write, and no overall
+call timeout. If your call needs a different deadline, set it with
 `httpClient.newBuilder()`.
 
 ```java
@@ -62,9 +71,11 @@ Methods to call:
 | `getItemPriceWithSource(int id, boolean useWikiPrice)` | When you need to pin the source. |
 | `getWikiPrice(ItemPrice)` | Applies the price-manipulation checks to a price you already hold. |
 
-All of them normalise the id first: notes map to the unnoted form, worn items to
-the inventory form, and bundles are priced as the sum of their components. A
-plugin that fetches prices itself loses that and will misprice noted stacks.
+The two that take an id normalise it first: notes map to the unnoted form, worn
+items to the inventory form, and untradeable variants (ornamented, degraded,
+kit-combined) are priced as their tradeable components. `getWikiPrice` takes a
+price you already hold and does no normalisation. A plugin that fetches prices
+itself loses all of that and will misprice noted stacks.
 
 Its other caches are worth copying as a shape:
 
@@ -75,8 +86,8 @@ itemImages = CacheBuilder.newBuilder()
 ```
 
 `itemStats` is loaded once in the constructor and never reloaded.
-`getItemComposition` is **not** cached — it calls the client every time, so do
-not put it in a tight render loop.
+`getItemComposition` adds no cache of its own — it is a straight call to
+`client.getItemDefinition(id)`.
 
 ## Item icons
 
@@ -133,8 +144,10 @@ draws the wrong item silently, which is worse than drawing nothing.
 
 ## Threads
 
-- The **client thread** draws the game. A blocking request there stutters the
-  client for as long as the far end takes.
+- The **client thread** draws the game. With the injected `OkHttpClient`, a
+  blocking `execute()` there throws (see the client-thread guard above), so
+  the feature fails rather than lagging. With any other HTTP client it stalls
+  the game for as long as the far end takes.
 - Tick handlers (`onGameTick`, `onClientTick`) run constantly. Nothing that can
   block belongs in one.
 - Use the injected `ScheduledExecutorService` for work, or OkHttp's `enqueue()`.
@@ -143,13 +156,15 @@ draws the wrong item silently, which is worse than drawing nothing.
 
 ## Resources
 
-Plugins ship as a JAR and the Hub states you may not assume it is unpacked on
-disk. So:
+Plugins ship as a JAR and the Hub states "you can not assume" it is unpacked on
+disk, so `getResource` hands back a `jar:` URL rather than a `file:` one. The
+Hub asks you to prefer `getResourceAsStream`:
 
 ```java
-getClass().getResourceAsStream("/icon.png")            // yes
-ImageUtil.loadImageResource(getClass(), "/icon.png")   // yes, for images
-getClass().getResource("/icon.png")                    // works in your IDE, fails when shipped
+getClass().getResourceAsStream("/icon.png")                    // yes
+ImageUtil.loadImageResource(getClass(), "/icon.png")           // yes, for images
+new ImageIcon(getClass().getResource("/icon.png"))             // works, but prefer the above
+new File(getClass().getResource("/data.json").toURI())         // works in your IDE, breaks when shipped
 ```
 
 ## Approved clients

@@ -144,19 +144,26 @@ wiki, the prices API, the hiscores or `api.runelite.net`.
 
 ## In CI
 
-The workflow is callable, so a plugin repo can gate its own pull requests:
+The repository is also a GitHub Action, so a plugin repo can gate its own pull
+requests. Add `.github/workflows/osrs-lint.yml`:
 
 ```yaml
+name: osrs-lint
+on: [pull_request]
 jobs:
   review:
-    uses: jtpete12/rswrlbp/.github/workflows/review.yml@main
-    with:
-      path: .
-      gate: error
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jtpete12/rswrlbp@main   # pin a release tag or commit SHA in real use
+        with:
+          path: .
+          gate: error
 ```
 
 Findings land as inline annotations on the diff. The gate step fails the run on
-anything at or above `gate`.
+anything at or above `gate`. It needs Node 18+ on the runner, which every
+GitHub-hosted runner has.
 
 ## The endpoint reference
 

@@ -1,0 +1,42 @@
+name: osrs-lint
+description: Static pre-review for OSRS plugins, apps and extensions — API etiquette toward the OSRS Wiki and Plugin Hub readiness.
+author: jtpete12
+branding:
+  icon: shield
+  color: orange
+
+# A composite action rather than a reusable workflow, because a composite
+# action runs from its own checkout at the ref the caller pinned
+# ($GITHUB_ACTION_PATH). A reusable workflow checks out the *caller's*
+# repository, so the checker script was never there — the first version of the
+# CI snippet in the README failed for everyone who copied it.
+#
+# The caller checks out their own repository first. Needs Node >= 18 on the
+# runner, which every GitHub-hosted runner already has; this deliberately does
+# not run setup-node, so it never changes the Node version a caller's later
+# steps see.
+
+inputs:
+  path:
+    description: Directory to review, relative to the workspace.
+    default: .
+  gate:
+    description: Severity that fails the run (error, warn, info, none).
+    default: error
+
+runs:
+  using: composite
+  steps:
+    # --github turns findings into inline annotations on the diff. This step
+    # never fails; the next one decides.
+    - name: Annotate findings
+      shell: bash
+      env:
+        OSRS_LINT_PATH: ${{ inputs.path }}
+      run: node "$GITHUB_ACTION_PATH/plugins/osrs-plugin-review/scripts/osrs-lint.mjs" "$OSRS_LINT_PATH" --github --gate none
+    - name: Gate
+      shell: bash
+      env:
+        OSRS_LINT_PATH: ${{ inputs.path }}
+        OSRS_LINT_GATE: ${{ inputs.gate }}
+      run: node "$GITHUB_ACTION_PATH/plugins/osrs-plugin-review/scripts/osrs-lint.mjs" "$OSRS_LINT_PATH" --gate "$OSRS_LINT_GATE" --quiet

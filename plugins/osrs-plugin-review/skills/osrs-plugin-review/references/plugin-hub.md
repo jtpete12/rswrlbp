@@ -28,8 +28,10 @@ server response.
   verification, and a maintainer verifies each new one **by hand**. The README's
   guidance is to avoid new dependencies "unless absolutely necessary" — each one
   lengthens review.
-- **Resources** must be loaded with `getResourceAsStream`, not `getResource`:
-  "The plugin is not unpacked on disk, and you can not assume that it is."
+- **Resources**: the README asks you to prefer `getResourceAsStream` over
+  `getResource`: "The plugin is not unpacked on disk, and you can not assume
+  that it is." Reading through the URL still works; treating it as a file path
+  does not.
 - **`icon.png`** is optional and must be no larger than 48x72 px.
 - **Licence**: add a BSD 2-Clause "Simplified" `LICENSE` file.
 - **Build type**: `standard` replaces your `build.gradle` and `settings.gradle`

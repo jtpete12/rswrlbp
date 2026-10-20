@@ -14,13 +14,13 @@ most worth arguing with.
 | Rule | Sev | Source |
 | --- | --- | --- |
 | `per-item-price-request` | error | [Prices — latest][latest]: omitting `id` costs ~100x less; "don't hit us with 3700 API requests" |
-| `prices-api-v1` | warn | [Prices — migrating v1 to v2][v2]: v1 is documented as removable |
+| `prices-api-v1` | warn | [Prices — migrating v1 to v2][v2]: v1 is documented as removable. Not raised for `/v1/dmm`, which has no v2 |
 | `timeseries-in-loop` | error | [Prices — time-series][timeseries]: per-item by design |
 | `timestep-assumed` | info | [Prices — time-series][timeseries]: the timestep is "NOT guaranteed" |
 | `blocked-default-user-agent` | error | [Prices — User-Agent][ua]: blocks python-requests, Python-urllib, Apache-HttpClient, RestSharp, `Java/{version}`, `curl/{version}` |
 | `no-user-agent` | error | [Prices — User-Agent][ua]: the one stated requirement |
 | `no-cache-layer` | error | [Prices — acceptable use][aup] and [Etiquette — caching][etiq-cache] |
-| `polling-faster-than-data` | error | [Prices — acceptable use][aup]: "multiple large queries per second for a sustained period" |
+| `polling-faster-than-data` | error | [Prices — acceptable use][aup]: "multiple large queries per second for a sustained period". Drops to **info** when the timer's callback returns early unless the data is stale — the gate, not the tick, sets the rate |
 | `expensive-wiki-query` | error | [Etiquette — request limit][reqlimit]: parser, SMW and Cargo queries do work per request |
 | `mediawiki-no-maxlag` | warn | [Etiquette — the maxlag parameter][maxlag] |
 | `mediawiki-unbatched` | warn | [Etiquette — request limit][reqlimit]: batch pipe-separated, up to 50 |
@@ -37,17 +37,17 @@ most worth arguing with.
 
 | Rule | Sev | Source |
 | --- | --- | --- |
-| `own-okhttp-client` | error | [RuneLite.java][runelite-src]: the injected client carries the User-Agent interceptor, a 20 MB disk cache and a shared pool |
+| `own-okhttp-client` | error | [RuneLite.java][runelite-src]: the injected client carries the User-Agent interceptor, a 20 MB disk cache, a shared pool, and (via `RuneLiteModule`) a guard that refuses blocking calls on the client thread |
 | `reimplements-item-prices` | warn | [ItemManager.java][itemmanager]: holds every price, refreshed every 30 minutes, with id normalisation |
-| `getresource-not-stream` | error | [Plugin Hub README][hub]: "the plugin is not unpacked on disk" |
+| `getresource-not-stream` | error / warn | [Plugin Hub README][hub]: "the plugin is not unpacked on disk", so prefer the stream. **error** when the URL is turned into a `File` or `Path`, which breaks in a JAR; **warn** otherwise, since reading through the URL still works |
 | `unbounded-cache` | info | [ItemManager.java][itemmanager]: RuneLite's own caches cap at 128 and expire an hour after last access |
-| `network-on-game-thread` | error | **Inferred** (practice P24): the client thread draws the game |
+| `network-on-game-thread` | error | [RuneLiteModule.java][runelite-src]: the injected client throws on a blocking call on the client thread; with any other client it stalls the game |
 
 ## Monetization, licensing, data
 
 | Rule | Sev | Source |
 | --- | --- | --- |
-| `paywalled-feature` | error | [Plugin Hub README][hub] (unverifiable plugins are not merged) and [CC BY-NC-SA 3.0][cc] (non-commercial) |
+| `paywalled-feature` | error | [Plugin Hub README][hub] (unverifiable plugins are not merged) and [CC BY-NC-SA 3.0][cc] (non-commercial). Matches gates and licence-verification APIs, not payment platforms by name — a donate button that unlocks nothing is fine |
 | `remote-feature-gate` | error | [Plugin Hub README][hub]: "if it is difficult for us to ensure the plugin isn't against the rules we will not merge it" |
 | `hardcoded-credential` | error | [Plugin Hub README][hub]: the repository must be public |
 | `missing-attribution` | warn | [CC BY-NC-SA 3.0][cc] requires attribution; see also [the wiki's terms thread][terms] |
@@ -90,8 +90,13 @@ whether a disclosed collection is proportionate. Those are the judgment pass in
 It is also tuned for **precision over recall**. Rules that depend on reaching a
 tracked service require evidence at the call site — a host literal, a constant
 bound to one, or a callback whose body reaches one — rather than "this repo
-mentions the wiki somewhere". That means it misses indirection through several
+mentions the wiki somewhere". A wiki URL handed to the browser is a link, not
+a request, and does not count. That means it misses indirection through several
 layers. A quiet run is not a certificate.
+
+It skips test sources — `test/`, `tests/`, `__tests__/`, `androidTest/`, and
+`*.test.*` / `*.spec.*` files — because they never ship. A test asserting the
+donate link is present is not the plugin doing anything.
 
 ## Silencing a finding
 

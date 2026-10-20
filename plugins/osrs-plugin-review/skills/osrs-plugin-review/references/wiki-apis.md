@@ -10,9 +10,13 @@ Sources:
 
 ## Real-time prices
 
-Base: `https://prices.runescape.wiki/api/v2/osrs` (and `/api/v2/dmm` for
-Deadman). **v1 is still served but documented as removable** — new code should
-be on v2.
+Base: `https://prices.runescape.wiki/api/v2/osrs`. **v1 is still served but
+documented as removable** — new code should be on v2.
+
+Deadman is the exception: `/api/v2/dmm/*` returns 404, and `/api/v1/dmm/latest`
+still answers but is undocumented on the current Real-time Prices page and its
+data was months stale when last checked (October 2026). A DMM tool has no v2 to
+move to; say so rather than flagging its v1 use.
 
 | Endpoint | Returns | How often it is worth fetching |
 | --- | --- | --- |
@@ -147,8 +151,10 @@ favour; a filename ladder on every page load is not.
 
 ## Licensing
 
-Wiki content is licensed **CC BY-NC-SA 3.0**. The wiki's own summary of its
-position:
+Wiki content is licensed **CC BY-NC-SA 3.0** (the licence linked in every
+article footer). A wiki staff member summarised the position in a 2018 reply on
+[Forum:API and terms of use](https://oldschool.runescape.wiki/w/Forum:API_and_terms_of_use)
+— a forum answer, not a policy page:
 
 > Our main license for content is a non-commercial one.
 
